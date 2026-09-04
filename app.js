@@ -101,7 +101,7 @@ const state = {
   currentSongId: null,
   activeDuration:"QUARTER", isDotted:false, isTriplet:false,
   activeAccidental:"NONE", activeArticulation:"NONE",
-  selectedNoteRef: null,
+  selectedNoteRef: null, cursorMeasure: null,
   showPiano: true, showToolbar: true, baseOctave: 4,
   isPlaying: false, playingRef: null, playTimer: null,
 };
@@ -383,7 +383,7 @@ function confirmDeleteSong(id){
     closeModal(); toast("Song gelöscht."); renderLibrary();
   };
 }
-function openSong(id){ state.currentSongId=id; setTab("EDITOR"); }
+function openSong(id){ state.currentSongId=id; state.selectedNoteRef=null; state.cursorMeasure=null; setTab("EDITOR"); }
 
 /* ---------------- Setlists ---------------- */
 function renderSetlists(){
@@ -690,6 +690,11 @@ function renderStaff(){
       sys.forEach((mi)=>{
         const layout = measureLayouts[mi];
         const mw = layout.width;
+        const isCursorHere = state.cursorMeasure!=null ? mi===state.cursorMeasure : mi===song.measures.length-1;
+        if(isCursorHere){
+          svg += '<rect x="'+x+'" y="'+(staffTopY-6)+'" width="'+mw+'" height="'+(systemBottomY-staffTopY+12)+'" fill="#E5A93C" opacity="0.12" rx="4"/>';
+        }
+        svg += '<rect class="measure-hit" data-mi="'+mi+'" x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="transparent" style="cursor:pointer"/>';
         if(isGrand){
           layout.trebleSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, "treble", {chordY: staffTopY-8, lyricY: systemBottomY+34}); });
           layout.bassSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForBass, "bass", {}); });
@@ -712,7 +717,16 @@ function renderStaff(){
   wrap.querySelectorAll(".notehit").forEach(elx=>{
     elx.addEventListener("click",()=>{
       const m=+elx.dataset.m, i=+elx.dataset.i;
-      state.selectedNoteRef=(state.selectedNoteRef&&state.selectedNoteRef.m===m&&state.selectedNoteRef.i===i)?null:{m,i};
+      const wasSelected = state.selectedNoteRef && state.selectedNoteRef.m===m && state.selectedNoteRef.i===i;
+      state.selectedNoteRef = wasSelected ? null : {m,i};
+      state.cursorMeasure = m;
+      renderStaff();
+    });
+  });
+  wrap.querySelectorAll(".measure-hit").forEach(elx=>{
+    elx.addEventListener("click",()=>{
+      state.selectedNoteRef = null;
+      state.cursorMeasure = +elx.dataset.mi;
       renderStaff();
     });
   });
@@ -812,17 +826,30 @@ function buildKeys(){
   }
 }
 
+/** Finds the first measure at or after startMi with room for `neededBeats`,
+ *  extending the piece with a new measure only if none of the existing ones fit. */
+function findRoomStartingAt(song, startMi, neededBeats){
+  const cap = totalBeats(song.timeSig);
+  let mi = startMi;
+  while(mi < song.measures.length && measureBeats(song.measures[mi]) + neededBeats > cap+0.001){
+    mi++;
+  }
+  if(mi >= song.measures.length){
+    song.measures.push({notes:[]});
+    mi = song.measures.length-1;
+  }
+  return mi;
+}
+
 function addNote(pitch,isRest){
   const song=currentSong(); if(!song) return;
-  let mi=song.measures.length-1;
-  const cap=totalBeats(song.timeSig);
+  const startMi = (state.cursorMeasure!=null && song.measures[state.cursorMeasure]) ? state.cursorMeasure : song.measures.length-1;
   let dur=state.activeDuration, dotted=state.isDotted, triplet=state.isTriplet;
   let beats=durOf(dur).beats*(dotted?1.5:1)*(triplet?2/3:1);
-  if(measureBeats(song.measures[mi])+beats > cap+0.001){
-    song.measures.push({notes:[]}); mi=song.measures.length-1;
-  }
+  const mi = findRoomStartingAt(song, startMi, beats);
   const note={pitch,dur,dotted,triplet,acc:isRest?"NONE":state.activeAccidental,art:isRest?"NONE":state.activeArticulation,rest:isRest};
   song.measures[mi].notes.push(note);
+  state.cursorMeasure = mi;
   if(!isRest){
     const shift=(ACCIDENTALS.find(a=>a.id===note.acc)||{shift:0}).shift;
     playTone(pitch+shift, beats*(60/song.tempo), song.instrument, note.art);
@@ -835,9 +862,10 @@ function deleteNote(){
     const {m,i}=state.selectedNoteRef;
     if(song.measures[m]){ song.measures[m].notes.splice(i,1); }
     state.selectedNoteRef=null;
+    state.cursorMeasure=m;
   } else {
     for(let m=song.measures.length-1;m>=0;m--){
-      if(song.measures[m].notes.length){ song.measures[m].notes.pop(); break; }
+      if(song.measures[m].notes.length){ song.measures[m].notes.pop(); state.cursorMeasure=m; break; }
     }
   }
   renderStaff();
