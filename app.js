@@ -101,7 +101,7 @@ const state = {
   currentSongId: null,
   activeDuration:"QUARTER", isDotted:false, isTriplet:false,
   activeAccidental:"NONE", activeArticulation:"NONE",
-  selectedNoteRef: null, cursorMeasure: null, staffZoom: 1,
+  selectedNoteRef: null, cursorMeasure: null, insertBeforeIndex: null, noteEditIntent: false, staffZoom: 1,
   showPiano: true, showToolbar: true, baseOctave: 4,
   isPlaying: false, playingRef: null, playTimer: null,
 };
@@ -229,6 +229,8 @@ const ICON = {
   sliders:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h8M16 6h4M4 12h2M8 12h12M4 18h12M20 18h0"/><circle cx="14" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="6" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="18" r="2" fill="currentColor" stroke="none"/></svg>',
   minus:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14"/></svg>',
   zoomReset:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>',
+  chevronLeft:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>',
+  chevronRight:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
 };
 
 /* ---------------- Toast ---------------- */
@@ -385,7 +387,11 @@ function confirmDeleteSong(id){
     closeModal(); toast("Song gelöscht."); renderLibrary();
   };
 }
-function openSong(id){ state.currentSongId=id; state.selectedNoteRef=null; state.cursorMeasure=null; setTab("EDITOR"); }
+function openSong(id){
+  state.currentSongId=id; state.selectedNoteRef=null; state.cursorMeasure=null;
+  state.insertBeforeIndex=null; state.noteEditIntent=false;
+  setTab("EDITOR");
+}
 
 /* ---------------- Setlists ---------------- */
 function renderSetlists(){
@@ -600,25 +606,25 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
   const isPlay = state.playingRef && state.playingRef.m===mi && state.playingRef.i===idx;
   if(nt.rest){
     const ry = yFor(2);
-    if(isPlay) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#F59E0B" opacity="0.35"/>';
-    if(isSel) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#3B82F6" opacity="0.3"/>';
-    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-17)+'" y="'+(ry-18)+'" width="34" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+    if(isPlay) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#F59E0B" opacity="0.35" pointer-events="none"/>';
+    if(isSel) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#3B82F6" opacity="0.3" pointer-events="none"/>';
+    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-11)+'" y="'+(ry-18)+'" width="22" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
     s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" pointer-events="none">'+REST_GLYPH[nt.dur]+'</text>';
   } else {
     const step = staffStep(nt.pitch+((ACCIDENTALS.find(a=>a.id===nt.acc)||{shift:0}).shift), clefForPitch);
     const y = yFor(step);
     for(let sN=-1; sN>=Math.ceil(step-0.1) && step<-0.5; sN--){ s+='<line x1="'+(nx-11)+'" y1="'+yFor(sN)+'" x2="'+(nx+11)+'" y2="'+yFor(sN)+'" stroke="#171522" stroke-width="1.2"/>'; if(sN<Math.floor(step)) break; }
     for(let sN=5; sN<=Math.floor(step+0.1) && step>4.5; sN++){ s+='<line x1="'+(nx-11)+'" y1="'+yFor(sN)+'" x2="'+(nx+11)+'" y2="'+yFor(sN)+'" stroke="#171522" stroke-width="1.2"/>'; if(sN>Math.ceil(step)) break; }
-    if(isSel) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#3B82F6" opacity="0.3"/>';
-    if(isPlay) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#F59E0B" opacity="0.4"/>';
+    if(isSel) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#3B82F6" opacity="0.3" pointer-events="none"/>';
+    if(isPlay) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#F59E0B" opacity="0.4" pointer-events="none"/>';
     const accSym=(ACCIDENTALS.find(a=>a.id===nt.acc)||{}).symbol;
-    if(accSym) s += '<text x="'+(nx-18)+'" y="'+(y+6)+'" font-size="16" fill="#171522">'+accSym+'</text>';
-    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-17)+'" y="'+(y-20)+'" width="34" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+    if(accSym && nt.acc!=="NONE") s += '<text x="'+(nx-18)+'" y="'+(y+6)+'" font-size="16" fill="#171522" pointer-events="none">'+accSym+'</text>';
+    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-11)+'" y="'+(y-20)+'" width="22" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
     s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(y+8)+'" font-size="30" text-anchor="middle" fill="#171522" pointer-events="none">'+durOf(nt.dur).symbol+'</text>';
-    if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(y-3)+'" r="2" fill="#171522"/>';
-    if(nt.art && nt.art!=="NONE") s += '<text x="'+nx+'" y="'+(y-16)+'" font-size="13" text-anchor="middle" fill="#171522">'+(ARTICULATIONS.find(a=>a.id===nt.art)||{}).symbol+'</text>';
-    if(opts.chordY!=null && nt.chord) s += '<text x="'+nx+'" y="'+opts.chordY+'" font-size="12" font-weight="700" text-anchor="middle" fill="#0A50A0">'+esc(nt.chord)+'</text>';
-    if(opts.lyricY!=null && nt.lyric) s += '<text x="'+nx+'" y="'+opts.lyricY+'" font-size="11" font-style="italic" text-anchor="middle" fill="#4B4A57">'+esc(nt.lyric)+'</text>';
+    if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(y-3)+'" r="2" fill="#171522" pointer-events="none"/>';
+    if(nt.art && nt.art!=="NONE") s += '<text x="'+nx+'" y="'+(y-16)+'" font-size="13" text-anchor="middle" fill="#171522" pointer-events="none">'+(ARTICULATIONS.find(a=>a.id===nt.art)||{}).symbol+'</text>';
+    if(opts.chordY!=null && nt.chord) s += '<text x="'+nx+'" y="'+opts.chordY+'" font-size="12" font-weight="700" text-anchor="middle" fill="#0A50A0" pointer-events="none">'+esc(nt.chord)+'</text>';
+    if(opts.lyricY!=null && nt.lyric) s += '<text x="'+nx+'" y="'+opts.lyricY+'" font-size="11" font-style="italic" text-anchor="middle" fill="#4B4A57" pointer-events="none">'+esc(nt.lyric)+'</text>';
   }
   return s;
 }
@@ -758,7 +764,11 @@ function renderStaff(){
         if(isCursorHere){
           svg += '<rect x="'+x+'" y="'+(staffTopY-6)+'" width="'+mw+'" height="'+(systemBottomY-staffTopY+12)+'" fill="#E5A93C" opacity="0.12" rx="4"/>';
         }
-        svg += '<rect class="measure-hit" data-mi="'+mi+'" x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+        const mkMidpoints = (slots)=> slots.map(sl=>sl.x.toFixed(1)+':'+sl.idx).join(',');
+        const midAttrs = isGrand
+          ? ' data-grand="1" data-mid-y="'+((trebleBottomY+bassTopY)/2)+'" data-treble-midpoints="'+mkMidpoints(layout.trebleSlots)+'" data-bass-midpoints="'+mkMidpoints(layout.bassSlots)+'"'
+          : ' data-midpoints="'+mkMidpoints(layout.slots)+'"';
+        svg += '<rect class="measure-hit" data-mi="'+mi+'"'+midAttrs+' x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
         if(isGrand){
           layout.trebleSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, "treble", {chordY: staffTopY-8, lyricY: systemBottomY+34}); });
           layout.bassSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForBass, "bass", {}); });
@@ -783,14 +793,42 @@ function renderStaff(){
       const m=+elx.dataset.m, i=+elx.dataset.i;
       const wasSelected = state.selectedNoteRef && state.selectedNoteRef.m===m && state.selectedNoteRef.i===i;
       state.selectedNoteRef = wasSelected ? null : {m,i};
+      state.noteEditIntent = !wasSelected;
+      state.insertBeforeIndex = null;
       state.cursorMeasure = m;
       renderStaff();
     });
   });
   wrap.querySelectorAll(".measure-hit").forEach(elx=>{
-    elx.addEventListener("click",()=>{
+    elx.addEventListener("click",(e)=>{
+      const mi = +elx.dataset.mi;
+      const svgEl = elx.ownerSVGElement;
+      const pt = svgEl.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const svgP = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+      const localX = svgP.x - (+elx.getAttribute("x"));
+
+      const parseMidpoints = (str)=> (str||"").split(",").filter(Boolean).map(pair=>{
+        const [mx,idx] = pair.split(":"); return {x:+mx, idx:+idx};
+      });
+      const findInsertIdx = (list, fallbackLen)=>{
+        const hit = list.find(p=>localX < p.x);
+        return hit ? hit.idx : (list.length ? list[list.length-1].idx+1 : fallbackLen);
+      };
+
+      let insertIdx;
+      if(elx.dataset.grand==="1"){
+        const midY = +elx.dataset.midY;
+        const list = svgP.y < midY ? parseMidpoints(elx.dataset.trebleMidpoints) : parseMidpoints(elx.dataset.bassMidpoints);
+        insertIdx = findInsertIdx(list, 0);
+      } else {
+        insertIdx = findInsertIdx(parseMidpoints(elx.dataset.midpoints), 0);
+      }
+
       state.selectedNoteRef = null;
-      state.cursorMeasure = +elx.dataset.mi;
+      state.noteEditIntent = false;
+      state.cursorMeasure = mi;
+      state.insertBeforeIndex = insertIdx;
       renderStaff();
     });
   });
@@ -846,7 +884,13 @@ function renderPiano(){
       + '<button class="round-btn" id="octDown" '+(state.baseOctave<=2?"disabled":"")+'>'+ICON.arrowLeft+'</button>'
       + '<span class="oct-label">Oktave C'+state.baseOctave+' – H'+(state.baseOctave+1)+'</span>'
       + '<button class="round-btn" id="octUp" '+(state.baseOctave>=6?"disabled":"")+'>'+ICON.arrowRight+'</button>'
-    + '</div><div style="display:flex;gap:6px">'
+    + '</div>'
+    + '<div class="oct-group" style="gap:4px">'
+      + '<button class="round-btn" id="stepPrev" title="Zur vorherigen Note/Lücke springen">'+ICON.chevronLeft+'</button>'
+      + '<span class="oct-label">Position</span>'
+      + '<button class="round-btn" id="stepNext" title="Zur nächsten Note/Lücke springen">'+ICON.chevronRight+'</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:6px">'
       + '<button class="round-btn tint-green" id="restBtn" title="Pause einfügen">'+ICON.musicOff+'</button>'
       + '<button class="round-btn tint-red" id="delBtn" title="Note löschen">'+ICON.backspace+'</button>'
     + '</div></div>'
@@ -855,8 +899,44 @@ function renderPiano(){
   buildKeys();
   document.getElementById("octDown").onclick=()=>{ if(state.baseOctave>2){state.baseOctave--; renderPiano();} };
   document.getElementById("octUp").onclick=()=>{ if(state.baseOctave<6){state.baseOctave++; renderPiano();} };
+  document.getElementById("stepPrev").onclick=()=>stepCursor(-1);
+  document.getElementById("stepNext").onclick=()=>stepCursor(1);
   document.getElementById("restBtn").onclick=()=>addNote(60,true);
   document.getElementById("delBtn").onclick=deleteNote;
+}
+
+/** Steps the edit/insert cursor one stop left or right through the sequence
+ *  of notes and the gaps between them, moving into neighboring measures too. */
+function stepCursor(dir){
+  const song=currentSong(); if(!song || !song.measures.length) return;
+  let mi, pos;
+  if(state.cursorMeasure!=null && song.measures[state.cursorMeasure]){
+    mi = state.cursorMeasure;
+    if(state.noteEditIntent && state.selectedNoteRef && state.selectedNoteRef.m===mi){
+      pos = state.selectedNoteRef.i*2+1;
+    } else if(state.insertBeforeIndex!=null){
+      pos = state.insertBeforeIndex*2;
+    } else {
+      pos = song.measures[mi].notes.length*2;
+    }
+  } else {
+    mi = song.measures.length-1;
+    pos = song.measures[mi].notes.length*2;
+  }
+
+  pos += dir;
+  if(pos < 0){
+    if(mi>0){ mi--; pos = song.measures[mi].notes.length*2; } else { pos = 0; }
+  } else if(pos > song.measures[mi].notes.length*2){
+    if(mi < song.measures.length-1){ mi++; pos = 0; } else { pos = song.measures[mi].notes.length*2; }
+  }
+
+  if(pos%2===0){
+    state.cursorMeasure=mi; state.insertBeforeIndex=pos/2; state.selectedNoteRef=null; state.noteEditIntent=false;
+  } else {
+    state.cursorMeasure=mi; state.selectedNoteRef={m:mi, i:(pos-1)/2}; state.noteEditIntent=true; state.insertBeforeIndex=null;
+  }
+  renderStaff();
 }
 function buildKeys(){
   const frame=document.getElementById("keysFrame");
@@ -907,14 +987,45 @@ function findRoomStartingAt(song, startMi, neededBeats){
 
 function addNote(pitch,isRest){
   const song=currentSong(); if(!song) return;
-  const startMi = (state.cursorMeasure!=null && song.measures[state.cursorMeasure]) ? state.cursorMeasure : song.measures.length-1;
   let dur=state.activeDuration, dotted=state.isDotted, triplet=state.isTriplet;
   let beats=durOf(dur).beats*(dotted?1.5:1)*(triplet?2/3:1);
-  const mi = findRoomStartingAt(song, startMi, beats);
+
+  // A note was explicitly clicked (edit mode): change its pitch instead of inserting a new one.
+  if(state.noteEditIntent && state.selectedNoteRef){
+    const {m,i} = state.selectedNoteRef;
+    const target = song.measures[m] && song.measures[m].notes[i];
+    if(target){
+      target.rest = isRest;
+      if(!isRest){
+        target.pitch = pitch;
+        target.acc = state.activeAccidental;
+        target.art = state.activeArticulation;
+        const shift=(ACCIDENTALS.find(a=>a.id===target.acc)||{shift:0}).shift;
+        playTone(pitch+shift, noteBeats(target)*(60/song.tempo), song.instrument, target.art);
+      }
+      renderStaff();
+      return;
+    }
+  }
+
   const note={pitch,dur,dotted,triplet,acc:isRest?"NONE":state.activeAccidental,art:isRest?"NONE":state.activeArticulation,rest:isRest};
-  song.measures[mi].notes.push(note);
+  let mi, insertIdx;
+  if(state.cursorMeasure!=null && song.measures[state.cursorMeasure] && state.insertBeforeIndex!=null){
+    // An explicit gap was clicked: insert exactly there, even if that makes the measure run over —
+    // never silently jump to the next measure just because of that.
+    mi = state.cursorMeasure;
+    insertIdx = Math.min(state.insertBeforeIndex, song.measures[mi].notes.length);
+  } else {
+    const startMi = (state.cursorMeasure!=null && song.measures[state.cursorMeasure]) ? state.cursorMeasure : song.measures.length-1;
+    mi = findRoomStartingAt(song, startMi, beats);
+    insertIdx = song.measures[mi].notes.length;
+  }
+  song.measures[mi].notes.splice(insertIdx, 0, note);
+
   state.cursorMeasure = mi;
-  state.selectedNoteRef = {m:mi, i:song.measures[mi].notes.length-1};
+  state.insertBeforeIndex = insertIdx+1;
+  state.selectedNoteRef = {m:mi, i:insertIdx};
+  state.noteEditIntent = false;
   if(!isRest){
     const shift=(ACCIDENTALS.find(a=>a.id===note.acc)||{shift:0}).shift;
     playTone(pitch+shift, beats*(60/song.tempo), song.instrument, note.art);
@@ -927,10 +1038,17 @@ function deleteNote(){
     const {m,i}=state.selectedNoteRef;
     if(song.measures[m]){ song.measures[m].notes.splice(i,1); }
     state.selectedNoteRef=null;
+    state.noteEditIntent=false;
     state.cursorMeasure=m;
+    state.insertBeforeIndex=i;
   } else {
     for(let m=song.measures.length-1;m>=0;m--){
-      if(song.measures[m].notes.length){ song.measures[m].notes.pop(); state.cursorMeasure=m; break; }
+      if(song.measures[m].notes.length){
+        song.measures[m].notes.pop();
+        state.cursorMeasure=m;
+        state.insertBeforeIndex=song.measures[m].notes.length;
+        break;
+      }
     }
   }
   renderStaff();
