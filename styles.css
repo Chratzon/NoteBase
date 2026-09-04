@@ -189,8 +189,15 @@ body{
 .idx-badge{width:26px;height:26px;border-radius:50%;background:var(--amber);color:var(--ink);font-weight:700;font-size:12.5px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 
 /* ---------- Editor ---------- */
-.staff-wrap{background:var(--surface);border-radius:14px;border:1px solid var(--border);padding:14px}
-.staff-pages{display:flex;flex-direction:column;align-items:center;gap:18px}
+.staff-wrap{background:var(--surface);border-radius:14px;border:1px solid var(--border);padding:14px;overflow:auto;touch-action:pan-x pan-y}
+.staff-pages{display:flex;flex-direction:column;align-items:center;gap:18px;transform-origin:top center;transition:transform .15s ease;width:fit-content;margin:0 auto}
+.zoom-controls{
+  position:sticky;top:0;left:0;z-index:6;display:inline-flex;align-items:center;gap:4px;
+  background:var(--surface-hi);border:1px solid var(--border);border-radius:20px;padding:4px;
+  box-shadow:0 4px 10px rgba(0,0,0,.3);margin-bottom:8px;
+}
+.zoom-label{font-size:11.5px;font-weight:700;color:var(--text-2);min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+.zoom-controls .round-btn{width:28px;height:28px}
 .staff-page{
   background:var(--paper); border-radius:4px;
   box-shadow:0 10px 26px -8px rgba(0,0,0,.55), 0 1px 0 rgba(255,255,255,.4) inset;

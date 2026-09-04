@@ -101,7 +101,7 @@ const state = {
   currentSongId: null,
   activeDuration:"QUARTER", isDotted:false, isTriplet:false,
   activeAccidental:"NONE", activeArticulation:"NONE",
-  selectedNoteRef: null, cursorMeasure: null,
+  selectedNoteRef: null, cursorMeasure: null, staffZoom: 1,
   showPiano: true, showToolbar: true, baseOctave: 4,
   isPlaying: false, playingRef: null, playTimer: null,
 };
@@ -227,6 +227,8 @@ const ICON = {
   backspace:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 5H8l-6 7 6 7h13a2 2 0 002-2V7a2 2 0 00-2-2z"/><path d="M13.5 9.5l5 5M18.5 9.5l-5 5"/></svg>',
   speaker:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 5V4L8 9H4z"/><path d="M16.5 8.5a5 5 0 010 7M19 6a8.5 8.5 0 010 12"/></svg>',
   sliders:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h8M16 6h4M4 12h2M8 12h12M4 18h12M20 18h0"/><circle cx="14" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="6" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="18" r="2" fill="currentColor" stroke="none"/></svg>',
+  minus:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 12h14"/></svg>',
+  zoomReset:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/></svg>',
 };
 
 /* ---------------- Toast ---------------- */
@@ -480,9 +482,68 @@ function renderEditor(){
     dock.innerHTML="";
     return;
   }
-  el.innerHTML = '<div class="staff-wrap"><div class="staff-pages" id="staffPaper"></div></div>';
+  el.innerHTML = '<div class="staff-wrap" id="staffWrap">'
+      + '<div class="zoom-controls">'
+        + '<button class="round-btn" id="zoomOutBtn" title="Verkleinern">'+ICON.minus+'</button>'
+        + '<span class="zoom-label" id="zoomLabel">100%</span>'
+        + '<button class="round-btn" id="zoomInBtn" title="Vergrößern">'+ICON.add+'</button>'
+        + (state.staffZoom!==1 ? '<button class="round-btn" id="zoomResetBtn" title="Zoom zurücksetzen">'+ICON.zoomReset+'</button>' : '')
+      + '</div>'
+      + '<div class="staff-pages" id="staffPaper"></div>'
+    + '</div>';
   renderStaff();
   renderEditorDock();
+  setupZoomControls();
+}
+
+function setupZoomControls(){
+  const wrap = document.getElementById("staffWrap");
+  if(!wrap) return;
+  applyZoom(state.staffZoom);
+  document.getElementById("zoomInBtn").onclick=()=>applyZoom(state.staffZoom+0.2);
+  document.getElementById("zoomOutBtn").onclick=()=>applyZoom(state.staffZoom-0.2);
+  const resetBtn = document.getElementById("zoomResetBtn");
+  if(resetBtn) resetBtn.onclick=()=>applyZoom(1);
+
+  // Pinch-to-zoom with two touch points
+  let pinchStartDist = null, pinchStartZoom = 1;
+  wrap.addEventListener("touchstart", (e)=>{
+    if(e.touches.length===2){
+      pinchStartDist = touchDistance(e.touches);
+      pinchStartZoom = state.staffZoom;
+    }
+  }, {passive:true});
+  wrap.addEventListener("touchmove", (e)=>{
+    if(e.touches.length===2 && pinchStartDist){
+      e.preventDefault();
+      const factor = touchDistance(e.touches) / pinchStartDist;
+      applyZoom(pinchStartZoom*factor, true);
+    }
+  }, {passive:false});
+  wrap.addEventListener("touchend", (e)=>{ if(e.touches.length<2) pinchStartDist=null; });
+
+  wrap.ondblclick = ()=>applyZoom(state.staffZoom===1 ? 1.6 : 1);
+}
+function touchDistance(touches){
+  const dx=touches[0].clientX-touches[1].clientX, dy=touches[0].clientY-touches[1].clientY;
+  return Math.hypot(dx,dy);
+}
+function applyZoom(zoom, skipLabelButtonRebuild){
+  state.staffZoom = Math.max(0.6, Math.min(2.5, zoom));
+  const paper = document.getElementById("staffPaper");
+  const label = document.getElementById("zoomLabel");
+  if(paper) paper.style.transform = "scale("+state.staffZoom+")";
+  if(label) label.textContent = Math.round(state.staffZoom*100)+"%";
+  if(!skipLabelButtonRebuild){
+    const resetBtn = document.getElementById("zoomResetBtn");
+    const controls = document.querySelector(".zoom-controls");
+    if(state.staffZoom!==1 && !resetBtn && controls){
+      controls.insertAdjacentHTML("beforeend",'<button class="round-btn" id="zoomResetBtn" title="Zoom zurücksetzen">'+ICON.zoomReset+'</button>');
+      document.getElementById("zoomResetBtn").onclick=()=>applyZoom(1);
+    } else if(state.staffZoom===1 && resetBtn){
+      resetBtn.remove();
+    }
+  }
 }
 
 /**
@@ -540,7 +601,9 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
   if(nt.rest){
     const ry = yFor(2);
     if(isPlay) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#F59E0B" opacity="0.35"/>';
-    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" style="cursor:pointer">'+REST_GLYPH[nt.dur]+'</text>';
+    if(isSel) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#3B82F6" opacity="0.3"/>';
+    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-17)+'" y="'+(ry-18)+'" width="34" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" pointer-events="none">'+REST_GLYPH[nt.dur]+'</text>';
   } else {
     const step = staffStep(nt.pitch+((ACCIDENTALS.find(a=>a.id===nt.acc)||{shift:0}).shift), clefForPitch);
     const y = yFor(step);
@@ -550,7 +613,8 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
     if(isPlay) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#F59E0B" opacity="0.4"/>';
     const accSym=(ACCIDENTALS.find(a=>a.id===nt.acc)||{}).symbol;
     if(accSym) s += '<text x="'+(nx-18)+'" y="'+(y+6)+'" font-size="16" fill="#171522">'+accSym+'</text>';
-    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(y+8)+'" font-size="30" text-anchor="middle" fill="#171522" style="cursor:pointer">'+durOf(nt.dur).symbol+'</text>';
+    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-17)+'" y="'+(y-20)+'" width="34" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(y+8)+'" font-size="30" text-anchor="middle" fill="#171522" pointer-events="none">'+durOf(nt.dur).symbol+'</text>';
     if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(y-3)+'" r="2" fill="#171522"/>';
     if(nt.art && nt.art!=="NONE") s += '<text x="'+nx+'" y="'+(y-16)+'" font-size="13" text-anchor="middle" fill="#171522">'+(ARTICULATIONS.find(a=>a.id===nt.art)||{}).symbol+'</text>';
     if(opts.chordY!=null && nt.chord) s += '<text x="'+nx+'" y="'+opts.chordY+'" font-size="12" font-weight="700" text-anchor="middle" fill="#0A50A0">'+esc(nt.chord)+'</text>';
@@ -694,7 +758,7 @@ function renderStaff(){
         if(isCursorHere){
           svg += '<rect x="'+x+'" y="'+(staffTopY-6)+'" width="'+mw+'" height="'+(systemBottomY-staffTopY+12)+'" fill="#E5A93C" opacity="0.12" rx="4"/>';
         }
-        svg += '<rect class="measure-hit" data-mi="'+mi+'" x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="transparent" style="cursor:pointer"/>';
+        svg += '<rect class="measure-hit" data-mi="'+mi+'" x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
         if(isGrand){
           layout.trebleSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, "treble", {chordY: staffTopY-8, lyricY: systemBottomY+34}); });
           layout.bassSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForBass, "bass", {}); });
@@ -850,6 +914,7 @@ function addNote(pitch,isRest){
   const note={pitch,dur,dotted,triplet,acc:isRest?"NONE":state.activeAccidental,art:isRest?"NONE":state.activeArticulation,rest:isRest};
   song.measures[mi].notes.push(note);
   state.cursorMeasure = mi;
+  state.selectedNoteRef = {m:mi, i:song.measures[mi].notes.length-1};
   if(!isRest){
     const shift=(ACCIDENTALS.find(a=>a.id===note.acc)||{shift:0}).shift;
     playTone(pitch+shift, beats*(60/song.tempo), song.instrument, note.art);
