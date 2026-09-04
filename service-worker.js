@@ -1,4 +1,4 @@
-const CACHE_NAME = "notebase-shell-v12";
+const CACHE_NAME = "notebase-shell-v13";
 const SHELL_FILES = [
   "./",
   "./index.html",

@@ -611,6 +611,7 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
     if(isSel) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#3B82F6" opacity="0.3" pointer-events="none"/>';
     s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-11)+'" y="'+(ry-18)+'" width="22" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
     s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" pointer-events="none">'+REST_GLYPH[nt.dur]+'</text>';
+    if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(ry-3)+'" r="2" fill="#171522" pointer-events="none"/>';
   } else {
     const step = staffStep(nt.pitch+((ACCIDENTALS.find(a=>a.id===nt.acc)||{shift:0}).shift), clefForPitch);
     const y = yFor(step);
@@ -1116,7 +1117,12 @@ function startPlay(){
   const seq=[]; song.measures.forEach((m,mi)=>m.notes.forEach((nt,ni)=>seq.push({mi,ni,nt})));
   if(!seq.length){ toast("Keine Noten zum Abspielen."); return; }
   state.isPlaying=true; renderHeader();
-  let t=0, idx=0;
+  // Start from the selected note, if any, instead of always from the beginning.
+  let idx=0;
+  if(state.selectedNoteRef){
+    const found = seq.findIndex(s=>s.mi===state.selectedNoteRef.m && s.ni===state.selectedNoteRef.i);
+    if(found!==-1) idx = found;
+  }
   function step(){
     if(!state.isPlaying || idx>=seq.length){ stopPlay(); return; }
     const {mi,ni,nt}=seq[idx];
