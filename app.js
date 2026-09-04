@@ -577,13 +577,14 @@ const MIN_NOTE_SLOT=26, NOTE_SLOT_PAD=10;
 /** Lays out a hand's notes left-to-right, each getting width proportional to its
  *  duration (with a floor so 16th notes etc. don't crowd together). */
 function layoutNotes(items, beatWidth){
-  let cx=NOTE_SLOT_PAD; const slots=[];
+  let cx=NOTE_SLOT_PAD; const slots=[]; const gapEdges=[NOTE_SLOT_PAD];
   items.forEach(it=>{
     const w=Math.max(MIN_NOTE_SLOT, noteBeats(it.note)*beatWidth);
     slots.push({note:it.note, idx:it.idx, x:cx+w*0.4, w});
     cx+=w;
+    gapEdges.push(cx);
   });
-  return {width:cx+NOTE_SLOT_PAD, slots};
+  return {width:cx+NOTE_SLOT_PAD, slots, gapEdges};
 }
 /** Splits a measure's notes into right-hand (treble) / left-hand (bass) for the
  *  piano grand staff, by pitch (middle C and above = treble) — a simplification
@@ -658,23 +659,31 @@ function renderStaff(){
   const measureLayouts = song.measures.map(m=>{
     if(!m.notes.length){
       const width = Math.max(2.6, totalBeats(song.timeSig))*beatWidth*0.55;
-      return isGrand? {width, trebleSlots:[], bassSlots:[]} : {width, slots:[]};
+      return isGrand? {width, trebleSlots:[], bassSlots:[], trebleGapEdges:[NOTE_SLOT_PAD], bassGapEdges:[NOTE_SLOT_PAD]}
+                     : {width, slots:[], gapEdges:[NOTE_SLOT_PAD]};
     }
     if(isGrand){
       const {treble,bass} = splitHands(m.notes);
       const tl=layoutNotes(treble,beatWidth), bl=layoutNotes(bass,beatWidth);
       const width = Math.max(tl.width, bl.width);
-      const stretch=(layout)=>{
-        if(!layout.slots.length || layout.width>=width-0.01) return layout.slots;
+      const scaleFactor=(layout)=>{
+        if(!layout.slots.length || layout.width>=width-0.01) return 1;
         const innerOld=layout.width-2*NOTE_SLOT_PAD, innerNew=width-2*NOTE_SLOT_PAD;
-        const f = innerOld>0? innerNew/innerOld : 1;
-        return layout.slots.map(s=>Object.assign({},s,{x:NOTE_SLOT_PAD+(s.x-NOTE_SLOT_PAD)*f}));
+        return innerOld>0? innerNew/innerOld : 1;
       };
-      return {width, trebleSlots:stretch(tl), bassSlots:stretch(bl)};
+      const stretchX=(v,f)=> NOTE_SLOT_PAD+(v-NOTE_SLOT_PAD)*f;
+      const tf=scaleFactor(tl), bf=scaleFactor(bl);
+      return {
+        width,
+        trebleSlots: tl.slots.map(s=>Object.assign({},s,{x:stretchX(s.x,tf)})),
+        bassSlots: bl.slots.map(s=>Object.assign({},s,{x:stretchX(s.x,bf)})),
+        trebleGapEdges: tl.gapEdges.map(v=>stretchX(v,tf)),
+        bassGapEdges: bl.gapEdges.map(v=>stretchX(v,bf)),
+      };
     } else {
       const items = m.notes.map((nt,idx)=>({note:nt,idx}));
       const l = layoutNotes(items, beatWidth);
-      return {width:l.width, slots:l.slots};
+      return {width:l.width, slots:l.slots, gapEdges:l.gapEdges};
     }
   });
   const measureWidths = measureLayouts.map(l=>l.width);
@@ -763,6 +772,27 @@ function renderStaff(){
         const isCursorHere = state.cursorMeasure!=null ? mi===state.cursorMeasure : mi===song.measures.length-1;
         if(isCursorHere){
           svg += '<rect x="'+x+'" y="'+(staffTopY-6)+'" width="'+mw+'" height="'+(systemBottomY-staffTopY+12)+'" fill="#E5A93C" opacity="0.12" rx="4"/>';
+        }
+        if(isCursorHere && state.insertBeforeIndex!=null && !state.noteEditIntent){
+          let caretX, caretTopY, caretBottomY;
+          if(isGrand){
+            const notesArr = song.measures[mi].notes;
+            const flatIdx = Math.min(state.insertBeforeIndex, notesArr.length);
+            const handNote = notesArr[flatIdx] || notesArr[flatIdx-1];
+            const isBassHand = handNote && !handNote.rest && handNote.pitch<60;
+            const slots = isBassHand? layout.bassSlots : layout.trebleSlots;
+            const edges = isBassHand? layout.bassGapEdges : layout.trebleGapEdges;
+            const handRelIdx = slots.filter(s=>s.idx<flatIdx).length;
+            caretX = x + edges[Math.min(handRelIdx, edges.length-1)];
+            caretTopY = isBassHand? bassTopY-8 : staffTopY-8;
+            caretBottomY = isBassHand? bassBottomY+8 : trebleBottomY+8;
+          } else {
+            const flatIdx = Math.min(state.insertBeforeIndex, layout.gapEdges.length-1);
+            caretX = x + layout.gapEdges[flatIdx];
+            caretTopY = staffTopY-8;
+            caretBottomY = systemBottomY+8;
+          }
+          svg += '<line class="insert-caret" x1="'+caretX+'" y1="'+caretTopY+'" x2="'+caretX+'" y2="'+caretBottomY+'" stroke="#E5A93C" stroke-width="2.5" stroke-linecap="round"/>';
         }
         const mkMidpoints = (slots)=> slots.map(sl=>sl.x.toFixed(1)+':'+sl.idx).join(',');
         const midAttrs = isGrand
@@ -1011,8 +1041,9 @@ function addNote(pitch,isRest){
   const note={pitch,dur,dotted,triplet,acc:isRest?"NONE":state.activeAccidental,art:isRest?"NONE":state.activeArticulation,rest:isRest};
   let mi, insertIdx;
   if(state.cursorMeasure!=null && song.measures[state.cursorMeasure] && state.insertBeforeIndex!=null){
-    // An explicit gap was clicked: insert exactly there, even if that makes the measure run over —
-    // never silently jump to the next measure just because of that.
+    // An explicit gap was clicked: insert exactly there. The time signature still caps how
+    // many beats a measure may hold, so any overflow cascades forward into later measures
+    // (creating a new one at the end if needed) instead of silently overfilling this one.
     mi = state.cursorMeasure;
     insertIdx = Math.min(state.insertBeforeIndex, song.measures[mi].notes.length);
   } else {
@@ -1021,16 +1052,40 @@ function addNote(pitch,isRest){
     insertIdx = song.measures[mi].notes.length;
   }
   song.measures[mi].notes.splice(insertIdx, 0, note);
+  reflowFromMeasure(song, mi);
 
-  state.cursorMeasure = mi;
-  state.insertBeforeIndex = insertIdx+1;
-  state.selectedNoteRef = {m:mi, i:insertIdx};
+  // The cascade may have pushed our note into a later measure — find where it landed.
+  let foundM=mi, foundI=-1;
+  for(let m=mi; m<song.measures.length; m++){
+    const idx = song.measures[m].notes.indexOf(note);
+    if(idx!==-1){ foundM=m; foundI=idx; break; }
+  }
+  state.cursorMeasure = foundM;
+  state.insertBeforeIndex = foundI!==-1 ? Math.min(foundI+1, song.measures[foundM].notes.length) : null;
+  state.selectedNoteRef = foundI!==-1 ? {m:foundM, i:foundI} : null;
   state.noteEditIntent = false;
   if(!isRest){
     const shift=(ACCIDENTALS.find(a=>a.id===note.acc)||{shift:0}).shift;
     playTone(pitch+shift, beats*(60/song.tempo), song.instrument, note.art);
   }
   renderStaff();
+}
+/** Pushes any beats past a measure's time-signature capacity into the following
+ *  measures, one note at a time from the end — cascading forward as needed,
+ *  extending the piece with a new measure only if the very end is reached. */
+function reflowFromMeasure(song, startMi){
+  const cap = totalBeats(song.timeSig);
+  let mi = startMi;
+  while(mi < song.measures.length && measureBeats(song.measures[mi]) > cap + 0.001){
+    const m = song.measures[mi];
+    const overflow = [];
+    while(measureBeats(m) > cap + 0.001 && m.notes.length){
+      overflow.unshift(m.notes.pop());
+    }
+    if(mi+1 >= song.measures.length) song.measures.push({notes:[]});
+    song.measures[mi+1].notes = overflow.concat(song.measures[mi+1].notes);
+    mi++;
+  }
 }
 function deleteNote(){
   const song=currentSong(); if(!song) return;

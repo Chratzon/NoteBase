@@ -300,4 +300,7 @@ body{
 #updateReloadBtn{background:var(--ink);color:var(--amber-light);font-size:12.5px;padding:6px 12px}
 #updateDismissBtn{background:transparent;color:var(--ink);font-size:19px;line-height:1;padding:0 4px}
 
-@media (prefers-reduced-motion: reduce){.drawer,.piano-card,.toast{transition:none;animation:none}}
+.insert-caret{animation:caret-blink 1s steps(1) infinite}
+@keyframes caret-blink{50%{opacity:0}}
+
+@media (prefers-reduced-motion: reduce){.drawer,.piano-card,.toast,.insert-caret{transition:none;animation:none}}
