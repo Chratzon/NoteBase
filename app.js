@@ -126,6 +126,106 @@ function formatDuration(song){
   return Math.floor(secs/60)+":"+String(secs%60).padStart(2,"0");
 }
 
+/* ---------------- Persistenz (localStorage) ----------------
+ * Ohne diese Schicht lebte die gesamte Bibliothek nur im Arbeitsspeicher:
+ * jeder Neustart der App (und bei einer installierten PWA schon jedes
+ * Beenden) warf alle angelegten Notenblätter weg. */
+const STORAGE_KEY = "notebase.store.v1";
+let saveTimer = null, storageWarned = false;
+
+/** Bringt einen gespeicherten Song wieder in die Form, die die App erwartet –
+ *  auch wenn er von einer älteren Version geschrieben wurde. */
+function reviveSong(raw){
+  const s = Object.assign(makeSong({}), raw || {});
+  const rawMeasures = Array.isArray(s.measures) && s.measures.length ? s.measures : newMeasures(4);
+  s.measures = rawMeasures.map(m=>({
+    notes: (Array.isArray(m && m.notes) ? m.notes : []).filter(nt=>nt && typeof nt==="object").map(nt=>n(
+      Number.isFinite(+nt.pitch) ? +nt.pitch : 60,
+      durOf(nt.dur) ? nt.dur : "QUARTER",
+      {
+        dotted: !!nt.dotted,
+        triplet: !!nt.triplet,
+        acc: ACCIDENTALS.some(a=>a.id===nt.acc) ? nt.acc : "NONE",
+        art: ARTICULATIONS.some(a=>a.id===nt.art) ? nt.art : "NONE",
+        rest: !!nt.rest,
+        lyric: nt.lyric || "",
+        chord: nt.chord || ""
+      }
+    ))
+  }));
+  if(!keyOf(s.key)) s.key = "C_MAJOR";
+  if(!instrOf(s.instrument)) s.instrument = "PIANO";
+  if(!s.timeSig || !+s.timeSig.b || !+s.timeSig.v) s.timeSig = {b:4, v:4};
+  s.timeSig = {b:+s.timeSig.b, v:+s.timeSig.v};
+  s.tempo = Math.min(300, Math.max(20, +s.tempo || 120));
+  s.title = String(s.title || "Ohne Titel");
+  s.artist = String(s.artist || "");
+  s.composer = String(s.composer || "");
+  s.subtitle = String(s.subtitle || "");
+  return s;
+}
+
+function storeSnapshot(){
+  return {
+    v: 1,
+    songs: state.songs,
+    setlists: state.setlists,
+    ui: {
+      currentSongId: state.currentSongId,
+      tab: (state.tab==="EDITOR" && !currentSong()) ? "BIBLIOTHEK" : state.tab,
+      showPiano: state.showPiano,
+      showToolbar: state.showToolbar,
+      baseOctave: state.baseOctave,
+      staffZoom: state.staffZoom,
+      activeDuration: state.activeDuration
+    }
+  };
+}
+
+function persistNow(){
+  clearTimeout(saveTimer); saveTimer = null;
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(storeSnapshot()));
+    storageWarned = false;
+  }catch(e){
+    // Privater Modus oder volles Speicherkontingent – einmal melden, nicht bei jedem Tastendruck.
+    if(!storageWarned){
+      storageWarned = true;
+      toast("Speichern nicht möglich – Browser-Speicher voll oder blockiert (privates Fenster?).");
+    }
+  }
+}
+/** Fasst die vielen Render-getriebenen Speicherwünsche zu einem Schreibvorgang zusammen. */
+function persist(){ clearTimeout(saveTimer); saveTimer = setTimeout(persistNow, 300); }
+
+function loadPersisted(){
+  let raw = null;
+  try{ raw = localStorage.getItem(STORAGE_KEY); }catch(e){ return false; }
+  if(!raw) return false;
+  let data;
+  try{ data = JSON.parse(raw); }catch(e){ return false; }
+  if(!data || !Array.isArray(data.songs)) return false;
+
+  state.songs = data.songs.filter(x=>x && typeof x==="object").map(reviveSong);
+  state.setlists = Array.isArray(data.setlists) ? data.setlists.filter(sl=>sl && sl.id).map(sl=>({
+    id: String(sl.id),
+    title: String(sl.title || "Setliste"),
+    desc: String(sl.desc || ""),
+    date: String(sl.date || ""),
+    songIds: (Array.isArray(sl.songIds) ? sl.songIds : []).filter(id=>state.songs.some(s=>s.id===id))
+  })) : [];
+
+  const ui = data.ui || {};
+  if(ui.currentSongId && state.songs.some(s=>s.id===ui.currentSongId)) state.currentSongId = ui.currentSongId;
+  if(ui.tab==="BIBLIOTHEK" || ui.tab==="SETLISTEN" || (ui.tab==="EDITOR" && state.currentSongId)) state.tab = ui.tab;
+  if(typeof ui.showPiano==="boolean") state.showPiano = ui.showPiano;
+  if(typeof ui.showToolbar==="boolean") state.showToolbar = ui.showToolbar;
+  if(+ui.baseOctave>=2 && +ui.baseOctave<=6) state.baseOctave = +ui.baseOctave;
+  if(+ui.staffZoom) state.staffZoom = Math.max(0.6, Math.min(2.5, +ui.staffZoom));
+  if(durOf(ui.activeDuration)) state.activeDuration = ui.activeDuration;
+  return true;
+}
+
 /* ---------------- Audio (ports ScoreAudioSynthesizer.kt's per-instrument additive synthesis) ---------------- */
 let actx=null;
 function ensureAudio(){ if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==="suspended") actx.resume(); return actx; }
@@ -361,6 +461,7 @@ function renderLibrary(){
   });
   el.querySelectorAll("[data-action=edit]").forEach(b=>b.onclick=()=>openSong(b.closest(".song-card").dataset.id));
   el.querySelectorAll("[data-action=delete]").forEach(b=>b.onclick=()=>confirmDeleteSong(b.closest(".song-card").dataset.id));
+  persist();
 }
 function songCardHtml(song){
   const key=keyOf(song.key);
@@ -384,6 +485,7 @@ function confirmDeleteSong(id){
   document.getElementById("mDel").onclick=()=>{
     state.songs=state.songs.filter(s=>s.id!==id);
     state.setlists.forEach(sl=>sl.songIds=sl.songIds.filter(i=>i!==id));
+    persistNow();
     closeModal(); toast("Song gelöscht."); renderLibrary();
   };
 }
@@ -411,6 +513,7 @@ function renderSetlists(){
     state.setlists=state.setlists.filter(s=>s.id!==b.closest(".setlist-card").dataset.id);
     renderSetlists();
   });
+  persist();
 }
 function setlistCardHtml(sl){
   const songs=sl.songIds.map(id=>state.songs.find(s=>s.id===id)).filter(Boolean);
@@ -440,6 +543,7 @@ function renderSetlistDetail(el){
       : '<div class="empty-state">Noch keine Songs in dieser Setliste. Klicke auf &bdquo;Song +&ldquo;.</div>');
   document.getElementById("backBtn").onclick=()=>{ state.selectedSetlist=null; renderSetlists(); };
   document.getElementById("addToSetlistBtn").onclick=()=>openAddToSetlistModal(sl);
+  persist();
   el.querySelectorAll(".detail-song-row").forEach(row=>{
     row.querySelector('[data-act=up]').onclick=(e)=>{e.stopPropagation();moveInSetlist(sl,row.dataset.id,-1);};
     row.querySelector('[data-act=down]').onclick=(e)=>{e.stopPropagation();moveInSetlist(sl,row.dataset.id,1);};
@@ -540,6 +644,7 @@ function applyZoom(zoom, skipLabelButtonRebuild){
   const label = document.getElementById("zoomLabel");
   if(paper) paper.style.transform = "scale("+state.staffZoom+")";
   if(label) label.textContent = Math.round(state.staffZoom*100)+"%";
+  persist();
   if(!skipLabelButtonRebuild){
     const resetBtn = document.getElementById("zoomResetBtn");
     const controls = document.querySelector(".zoom-controls");
@@ -570,6 +675,7 @@ function renderEditorDock(){
   document.getElementById("dockTogglePiano").onclick=()=>{ state.showPiano=!state.showPiano; renderEditorDock(); };
   if(state.showToolbar) renderToolbar();
   if(state.showPiano) renderPiano();
+  persist();
 }
 
 const MIN_NOTE_SLOT=26, NOTE_SLOT_PAD=10;
@@ -599,18 +705,26 @@ function bracePath(x, yTop, yBottom){
   return 'M '+(x+8)+' '+yTop+' C '+x+' '+yTop+' '+(x+4)+' '+(midY-18)+' '+(x-7)+' '+midY
     +' C '+(x+4)+' '+(midY+18)+' '+x+' '+yBottom+' '+(x+8)+' '+yBottom;
 }
-/** Renders one note or rest as an SVG snippet against a given staff's yFor(). */
+/** Renders one note or rest as an SVG snippet against a given staff's yFor().
+ *  opts.interactive === false strips every editor-only element (hit targets,
+ *  selection and playback highlights) so the same routine can produce a clean
+ *  sheet for PDF/PNG export. */
 function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
   opts = opts || {};
+  const live = opts.interactive !== false;
   let s='';
-  const isSel = state.selectedNoteRef && state.selectedNoteRef.m===mi && state.selectedNoteRef.i===idx;
-  const isPlay = state.playingRef && state.playingRef.m===mi && state.playingRef.i===idx;
+  const isSel = live && state.selectedNoteRef && state.selectedNoteRef.m===mi && state.selectedNoteRef.i===idx;
+  const isPlay = live && state.playingRef && state.playingRef.m===mi && state.playingRef.i===idx;
+  const hitRect = (hx,hy,hw,hh)=> live
+    ? '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+hx+'" y="'+hy+'" width="'+hw+'" height="'+hh+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>'
+    : '';
+  const noteTag = live ? ' data-m="'+mi+'" data-i="'+idx+'" class="notehit"' : '';
   if(nt.rest){
     const ry = yFor(2);
     if(isPlay) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#F59E0B" opacity="0.35" pointer-events="none"/>';
     if(isSel) s += '<circle cx="'+nx+'" cy="'+ry+'" r="15" fill="#3B82F6" opacity="0.3" pointer-events="none"/>';
-    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-11)+'" y="'+(ry-18)+'" width="22" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
-    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" pointer-events="none">'+REST_GLYPH[nt.dur]+'</text>';
+    s += hitRect(nx-11, ry-18, 22, 36);
+    s += '<text'+noteTag+' x="'+nx+'" y="'+(ry+7)+'" font-size="26" text-anchor="middle" fill="#171522" pointer-events="none">'+REST_GLYPH[nt.dur]+'</text>';
     if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(ry-3)+'" r="2" fill="#171522" pointer-events="none"/>';
   } else {
     const step = staffStep(nt.pitch+((ACCIDENTALS.find(a=>a.id===nt.acc)||{shift:0}).shift), clefForPitch);
@@ -621,8 +735,8 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
     if(isPlay) s += '<circle cx="'+nx+'" cy="'+y+'" r="15" fill="#F59E0B" opacity="0.4" pointer-events="none"/>';
     const accSym=(ACCIDENTALS.find(a=>a.id===nt.acc)||{}).symbol;
     if(accSym && nt.acc!=="NONE") s += '<text x="'+(nx-18)+'" y="'+(y+6)+'" font-size="16" fill="#171522" pointer-events="none">'+accSym+'</text>';
-    s += '<rect data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+(nx-11)+'" y="'+(y-20)+'" width="22" height="36" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
-    s += '<text data-m="'+mi+'" data-i="'+idx+'" class="notehit" x="'+nx+'" y="'+(y+8)+'" font-size="30" text-anchor="middle" fill="#171522" pointer-events="none">'+durOf(nt.dur).symbol+'</text>';
+    s += hitRect(nx-11, y-20, 22, 36);
+    s += '<text'+noteTag+' x="'+nx+'" y="'+(y+8)+'" font-size="30" text-anchor="middle" fill="#171522" pointer-events="none">'+durOf(nt.dur).symbol+'</text>';
     if(nt.dotted) s += '<circle cx="'+(nx+13)+'" cy="'+(y-3)+'" r="2" fill="#171522" pointer-events="none"/>';
     if(nt.art && nt.art!=="NONE") s += '<text x="'+nx+'" y="'+(y-16)+'" font-size="13" text-anchor="middle" fill="#171522" pointer-events="none">'+(ARTICULATIONS.find(a=>a.id===nt.art)||{}).symbol+'</text>';
     if(opts.chordY!=null && nt.chord) s += '<text x="'+nx+'" y="'+opts.chordY+'" font-size="12" font-weight="700" text-anchor="middle" fill="#0A50A0" pointer-events="none">'+esc(nt.chord)+'</text>';
@@ -631,15 +745,23 @@ function drawNote(nt, mi, idx, nx, yFor, clefForPitch, opts){
   return s;
 }
 
+const EXPORT_FONT_STACK = "'Source Serif 4','Bravura Text','Segoe UI Symbol','Apple Symbols',Georgia,'Times New Roman',serif";
+
 /**
  * Packs measures into systems (line breaks) that fit a DIN-A4-proportioned page width,
  * then packs systems into pages (page breaks) that fit the A4-proportioned page height —
  * mirroring how ScoreSheetExporter.kt would paginate a real PDF export. Measure width
  * follows actual note content (denser measures take more room), and piano scores get a
  * full grand staff (treble + bass, braced) like real piano sheet music.
+ *
+ * Returns the finished SVG string per page. The on-screen editor and the PDF/PNG
+ * export both go through here, so what is printed is exactly what is displayed.
+ *   opts.pageWidth   – page width in px, the height follows the A4 ratio
+ *   opts.interactive – true for the editor, false for a clean export sheet
  */
-function renderStaff(){
-  const song=currentSong(); if(!song) return;
+function buildScorePages(song, opts){
+  opts = opts || {};
+  const live = opts.interactive !== false;
   const clef = instrOf(song.instrument).clef;
   const key=keyOf(song.key);
   const isGrand = song.instrument==="PIANO";
@@ -649,9 +771,7 @@ function renderStaff(){
   const SYSTEM_HEIGHT = isGrand? 232 : 150;
   const A4_RATIO = 297/210;
 
-  const wrapEl = document.querySelector(".staff-wrap");
-  const containerWidth = wrapEl ? wrapEl.clientWidth - 28 : 700;
-  const pageWidth = Math.max(480, Math.min(900, containerWidth));
+  const pageWidth = Math.round(opts.pageWidth || 700);
   const pageHeight = Math.round(pageWidth * A4_RATIO);
   const usableWidth = pageWidth - marginLeft - marginRight;
   const marginTopFirst = 92, marginTopCont = 40, marginBottom = 46;
@@ -708,11 +828,14 @@ function renderStaff(){
   const tempoLabel=(TEMPO_PRESETS.slice().sort((a,b)=>Math.abs(a.bpm-song.tempo)-Math.abs(b.bpm-song.tempo))[0]).it;
   const kt = key.count===0 ? "–" : (key.count+(key.sharp?"♯":"♭"));
 
-  let pageHtml="";
+  const out=[];
   pages.forEach((pageSystems,pageIdx)=>{
     const isFirst = pageIdx===0;
     const marginTop = isFirst? marginTopFirst : marginTopCont;
-    let svg = '<svg width="'+pageWidth+'" height="'+pageHeight+'" viewBox="0 0 '+pageWidth+' '+pageHeight+'" xmlns="http://www.w3.org/2000/svg">';
+    let svg = '<svg width="'+pageWidth+'" height="'+pageHeight+'" viewBox="0 0 '+pageWidth+' '+pageHeight+'" xmlns="http://www.w3.org/2000/svg"'
+            + (live? '' : ' font-family="'+EXPORT_FONT_STACK+'"')+'>';
+    // Exported pages carry their own white page ground; on screen the CSS supplies it.
+    if(!live) svg += '<rect x="0" y="0" width="'+pageWidth+'" height="'+pageHeight+'" fill="#FFFFFF"/>';
 
     if(isFirst){
       svg += '<text x="'+(pageWidth/2)+'" y="30" text-anchor="middle" font-size="22" font-weight="700" fill="#171522">'+esc(song.title)+'</text>';
@@ -770,7 +893,7 @@ function renderStaff(){
       sys.forEach((mi)=>{
         const layout = measureLayouts[mi];
         const mw = layout.width;
-        const isCursorHere = state.cursorMeasure!=null ? mi===state.cursorMeasure : mi===song.measures.length-1;
+        const isCursorHere = live && (state.cursorMeasure!=null ? mi===state.cursorMeasure : mi===song.measures.length-1);
         if(isCursorHere){
           svg += '<rect x="'+x+'" y="'+(staffTopY-6)+'" width="'+mw+'" height="'+(systemBottomY-staffTopY+12)+'" fill="#E5A93C" opacity="0.12" rx="4"/>';
         }
@@ -795,16 +918,19 @@ function renderStaff(){
           }
           svg += '<line class="insert-caret" x1="'+caretX+'" y1="'+caretTopY+'" x2="'+caretX+'" y2="'+caretBottomY+'" stroke="#E5A93C" stroke-width="2.5" stroke-linecap="round"/>';
         }
-        const mkMidpoints = (slots)=> slots.map(sl=>sl.x.toFixed(1)+':'+sl.idx).join(',');
-        const midAttrs = isGrand
-          ? ' data-grand="1" data-mid-y="'+((trebleBottomY+bassTopY)/2)+'" data-treble-midpoints="'+mkMidpoints(layout.trebleSlots)+'" data-bass-midpoints="'+mkMidpoints(layout.bassSlots)+'"'
-          : ' data-midpoints="'+mkMidpoints(layout.slots)+'"';
-        svg += '<rect class="measure-hit" data-mi="'+mi+'"'+midAttrs+' x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+        if(live){
+          const mkMidpoints = (slots)=> slots.map(sl=>sl.x.toFixed(1)+':'+sl.idx).join(',');
+          const midAttrs = isGrand
+            ? ' data-grand="1" data-mid-y="'+((trebleBottomY+bassTopY)/2)+'" data-treble-midpoints="'+mkMidpoints(layout.trebleSlots)+'" data-bass-midpoints="'+mkMidpoints(layout.bassSlots)+'"'
+            : ' data-midpoints="'+mkMidpoints(layout.slots)+'"';
+          svg += '<rect class="measure-hit" data-mi="'+mi+'"'+midAttrs+' x="'+x+'" y="'+staffTopY+'" width="'+mw+'" height="'+(systemBottomY-staffTopY)+'" fill="#000000" opacity="0" pointer-events="all" style="cursor:pointer"/>';
+        }
+        const noteOpts = {interactive: live};
         if(isGrand){
-          layout.trebleSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, "treble", {chordY: staffTopY-8, lyricY: systemBottomY+34}); });
-          layout.bassSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForBass, "bass", {}); });
+          layout.trebleSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, "treble", Object.assign({chordY: staffTopY-8, lyricY: systemBottomY+34}, noteOpts)); });
+          layout.bassSlots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForBass, "bass", noteOpts); });
         } else {
-          layout.slots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, clef, {chordY: staffTopY-8, lyricY: trebleBottomY+34}); });
+          layout.slots.forEach(sl=>{ svg += drawNote(sl.note, mi, sl.idx, x+sl.x, yForTreble, clef, Object.assign({chordY: staffTopY-8, lyricY: trebleBottomY+34}, noteOpts)); });
         }
         x += mw;
         const isLastMeasureOfPiece = mi===song.measures.length-1;
@@ -814,11 +940,23 @@ function renderStaff(){
     });
 
     svg += '</svg>';
-    pageHtml += '<div class="staff-page">'+svg+'</div>';
+    out.push(svg);
+  });
+
+  return {pages: out, pageWidth, pageHeight};
+}
+
+function renderStaff(){
+  const song=currentSong(); if(!song) return;
+  const wrapEl = document.querySelector(".staff-wrap");
+  const containerWidth = wrapEl ? wrapEl.clientWidth - 28 : 700;
+  const built = buildScorePages(song, {
+    pageWidth: Math.max(480, Math.min(900, containerWidth)),
+    interactive: true
   });
 
   const wrap=document.getElementById("staffPaper");
-  wrap.innerHTML=pageHtml;
+  wrap.innerHTML = built.pages.map(svg=>'<div class="staff-page">'+svg+'</div>').join("");
   wrap.querySelectorAll(".notehit").forEach(elx=>{
     elx.addEventListener("click",()=>{
       const m=+elx.dataset.m, i=+elx.dataset.i;
@@ -863,6 +1001,9 @@ function renderStaff(){
       renderStaff();
     });
   });
+  // Every score edit ends in a renderStaff(), so this is the one place that
+  // reliably catches note, measure, tempo, key and instrument changes.
+  persist();
 }
 
 function renderToolbar(){
@@ -1161,7 +1302,9 @@ function openAddSongModal(){
     const [b,v]=document.getElementById("fTs").value.split("/").map(Number);
     const song=makeSong({title, artist:document.getElementById("fArtist").value, tempo:+document.getElementById("fBpm").value||120,
       key:document.getElementById("fKey").value, timeSig:{b,v}, instrument:document.getElementById("fInstr").value, durationText:"–"});
-    state.songs.push(song); closeModal(); toast("Song angelegt."); openSong(song.id);
+    state.songs.push(song);
+    persistNow();
+    closeModal(); toast("Song angelegt und gespeichert."); openSong(song.id);
   };
 }
 function openPropertiesModal(){
@@ -1178,7 +1321,8 @@ function openPropertiesModal(){
     song.artist=document.getElementById("fArtist").value;
     song.subtitle=document.getElementById("fSub").value;
     song.composer=document.getElementById("fComp").value;
-    closeModal(); renderHeader(); renderStaff();
+    persistNow();
+    closeModal(); renderHeader(); renderStaff(); renderLibrary();
   };
 }
 function openInstrumentModal(){
@@ -1234,19 +1378,146 @@ function openLyricChordModal(){
   document.getElementById("mCancel").onclick=closeModal;
   document.getElementById("mSave").onclick=()=>{
     nt.lyric=document.getElementById("fLyric").value; nt.chord=document.getElementById("fChord").value;
+    persistNow();
     closeModal(); renderStaff();
   };
 }
+/* ---------------- Export (PDF / PNG) ---------------- */
+const EXPORT_PAGE_WIDTH = 794; // 210 mm bei 96 dpi -> exaktes A4-Seitenverhältnis
+
+function safeFileName(s){
+  const cleaned = String(s || "Notenblatt").replace(/[\\/:*?"<>|\u0000-\u001F]+/g, "-").replace(/\s+/g, " ").trim();
+  return (cleaned || "Notenblatt").slice(0, 70);
+}
+
+/** Reicht die Datei je nach Plattform an das Teilen-Menü (iOS/installierte PWA)
+ *  oder an einen klassischen Download weiter. */
+async function saveBlob(blob, filename){
+  try{
+    const file = new File([blob], filename, {type: blob.type});
+    const standalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+    const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+    if((isIOS || standalone) && navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title: filename});
+      return;
+    }
+  }catch(e){
+    if(e && e.name==="AbortError") return; // Nutzer hat das Teilen-Menü abgebrochen
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 8000);
+}
+
+/** UTF-8-sicheres Base64, auch für mehrseitige Partituren mit Sonderzeichen. */
+function utf8ToBase64(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "", chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  return btoa(bin);
+}
+
+function svgToImage(svgString){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = ()=>reject(new Error("SVG konnte nicht gerendert werden."));
+    // Data-URL statt Blob-URL: in Safari die zuverlässigere Variante für <img src=svg>.
+    img.src = "data:image/svg+xml;base64," + utf8ToBase64(svgString);
+  });
+}
+
+/** Alle Seiten untereinander in ein PNG. Die Seitenbreite im SVG wird für die
+ *  Rasterung hochskaliert, damit die Noten scharf bleiben. */
+async function exportAsPng(){
+  const song = currentSong(); if(!song) return;
+  const scale = 2, gap = 24;
+  const {pages, pageWidth, pageHeight} = buildScorePages(song, {pageWidth: EXPORT_PAGE_WIDTH, interactive: false});
+
+  const canvas = document.createElement("canvas");
+  canvas.width = pageWidth*scale;
+  canvas.height = (pageHeight*pages.length + gap*(pages.length-1))*scale;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for(let i=0;i<pages.length;i++){
+    const scaled = pages[i]
+      .replace('width="'+pageWidth+'"', 'width="'+(pageWidth*scale)+'"')
+      .replace('height="'+pageHeight+'"', 'height="'+(pageHeight*scale)+'"');
+    const img = await svgToImage(scaled);
+    ctx.drawImage(img, 0, i*(pageHeight+gap)*scale);
+  }
+
+  const blob = await new Promise(res=>canvas.toBlob(res, "image/png"));
+  if(!blob) throw new Error("PNG konnte nicht erzeugt werden.");
+  await saveBlob(blob, safeFileName(song.title) + ".png");
+}
+
+/** Baut ein eigenständiges A4-Druckdokument in einem versteckten iframe und
+ *  öffnet den Druckdialog – dort führt "Als PDF sichern" zum fertigen PDF.
+ *  Das ist der Weg, der ohne zusätzliche Bibliothek auf Desktop, Android und
+ *  iOS gleichermaßen funktioniert. */
+function exportAsPdf(){
+  const song = currentSong(); if(!song) return;
+  const {pages} = buildScorePages(song, {pageWidth: EXPORT_PAGE_WIDTH, interactive: false});
+  const doc = '<!doctype html><html lang="de"><head><meta charset="utf-8"><title>' + esc(song.title) + '</title>'
+    + '<style>'
+    + '@page{size:A4 portrait;margin:0}'
+    + 'html,body{margin:0;padding:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    + '.pg{width:210mm;height:297mm;overflow:hidden;page-break-after:always;break-after:page}'
+    + '.pg:last-child{page-break-after:auto;break-after:auto}'
+    + '.pg svg{display:block;width:210mm;height:297mm}'
+    + '</style></head><body>'
+    + pages.map(s=>'<div class="pg">'+s+'</div>').join("")
+    + '</body></html>';
+
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.cssText = "position:fixed;left:-10000px;top:0;width:230mm;height:320mm;border:0;background:#fff";
+  document.body.appendChild(frame);
+  frame.onload = ()=>{
+    setTimeout(()=>{
+      try{
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      }catch(e){
+        toast("Druckdialog konnte nicht geöffnet werden – bitte den Bild-Export nutzen.");
+      }
+      setTimeout(()=>frame.remove(), 60000);
+    }, 400);
+  };
+  frame.srcdoc = doc;
+}
+
 function openExportModal(){
+  const song = currentSong();
+  if(!song){ toast("Öffne zuerst einen Song im Editor."); return; }
+  const pageCount = buildScorePages(song, {pageWidth: EXPORT_PAGE_WIDTH, interactive: false}).pages.length;
   openModal('<h3>Notenblatt exportieren</h3>'
-    + '<p style="color:var(--text-2);font-size:13px;line-height:1.5;margin-top:-4px">In der echten App erzeugt <code>ScoreSheetExporter.kt</code> hier ein PDF oder PNG des Notenblatts.</p>'
+    + '<p style="color:var(--text-2);font-size:13px;line-height:1.5;margin-top:-4px">&bdquo;'+esc(song.title)+'&ldquo; &middot; '+pageCount+' Seite'+(pageCount>1?'n':'')+' im Format A4.</p>'
     + '<div class="option-list">'
-      + '<div class="option-row" id="expPdf"><div class="option-name">Als PDF exportieren</div><div class="option-sub">Druckfertiges Notenblatt</div></div>'
-      + '<div class="option-row" id="expImg"><div class="option-name">Als Bild exportieren</div><div class="option-sub">PNG für schnelles Teilen</div></div>'
+      + '<div class="option-row" id="expPdf"><div><div class="option-name">Als PDF exportieren</div><div class="option-sub">Öffnet den Druckdialog &ndash; dort &bdquo;Als PDF sichern&ldquo; wählen</div></div></div>'
+      + '<div class="option-row" id="expImg"><div><div class="option-name">Als Bild exportieren</div><div class="option-sub">PNG in doppelter Auflösung, alle Seiten untereinander</div></div></div>'
     + '</div><div class="modal-actions"><button class="btn-ghost" id="mClose">Schließen</button></div>');
   document.getElementById("mClose").onclick=closeModal;
-  document.getElementById("expPdf").onclick=()=>{ closeModal(); toast("Demo: PDF-Export ist in dieser Web-Rekonstruktion simuliert."); };
-  document.getElementById("expImg").onclick=()=>{ closeModal(); toast("Demo: Bild-Export ist in dieser Web-Rekonstruktion simuliert."); };
+  document.getElementById("expPdf").onclick=()=>{
+    closeModal();
+    toast("Druckansicht wird vorbereitet …");
+    setTimeout(exportAsPdf, 120);
+  };
+  document.getElementById("expImg").onclick=async ()=>{
+    closeModal();
+    toast("Bild wird erzeugt …");
+    try{
+      await exportAsPng();
+      toast("Notenblatt als PNG exportiert.");
+    }catch(e){
+      toast("Bild-Export fehlgeschlagen: " + (e && e.message ? e.message : "unbekannter Fehler"));
+    }
+  };
 }
 function openMoreMenu(){
   openModal('<h3>Optionen</h3><div class="option-list">'
@@ -1263,8 +1534,18 @@ function openMoreMenu(){
 }
 
 /* ---------------- Boot ---------------- */
+// Gespeicherte Bibliothek laden; ohne Speicherstand bleiben die Demo-Songs stehen
+// und werden sofort einmal weggeschrieben, damit ab jetzt alles erhalten bleibt.
+const hadStoredData = loadPersisted();
 renderHeader(); renderDrawer(); renderLibrary(); renderSetlists();
-document.getElementById("view-BIBLIOTHEK").classList.add("active");
+setTab(state.tab || "BIBLIOTHEK");
+if(!hadStoredData) persistNow();
+
+// Letzte Rettung: beim Wegwischen oder Schließen der App sofort schreiben,
+// statt auf den 300-ms-Timer zu warten.
+window.addEventListener("pagehide", persistNow);
+window.addEventListener("beforeunload", persistNow);
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="hidden") persistNow(); });
 
 let resizeT=null;
 window.addEventListener("resize", ()=>{
